@@ -19,6 +19,7 @@ OTHER_OPTION = "Other (type custom model)"
 
 
 def get_all_chat_models():
+    
     """
     Returns a sorted list of dicts:
     [{"display": "gpt-4o-mini  —  openai", "model_id": "gpt-4o-mini"}, ...]
@@ -26,6 +27,7 @@ def get_all_chat_models():
     model_id is already the exact string litellm.completion() expects --
     no extra prefix-building needed, litellm's own keys are pre-formatted.
     """
+    
     model_cost = litellm.model_cost
     models = []
 
@@ -39,7 +41,7 @@ def get_all_chat_models():
         display = f"{model_id}  —  {provider}"
         models.append({"display": display, "model_id": model_id, "provider": provider})
 
-    models.sort(key=lambda m: m["display"].lower())
+    models.sort(key=lambda m: m["display"].lower()) 
     return models
 
 
