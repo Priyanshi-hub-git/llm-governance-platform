@@ -5,12 +5,14 @@ Core black-box evaluation logic for Layer 1.
 - get_model_response(): sends ONE prompt to the model via litellm, returns
   (response_text, cost_in_usd)
 - run_full_evaluation(): loops through every prompt in TEST_PROMPTS,
-  collects results + running total cost into a Pandas DataFrame
+  scores each response via scoring.py, and collects everything + running
+  total cost into a Pandas DataFrame
 
 Design note: this file doesn't know or care which provider (OpenAI, Gemini,
 Anthropic, etc.) is behind model_id -- litellm handles that. This file only
-deals with "send prompt, get text + cost back".
+deals with "send prompt, get text + cost back, score it."
 """
+
 import litellm
 litellm.suppress_debug_info = True
 
@@ -18,10 +20,10 @@ import pandas as pd
 from litellm import completion, completion_cost
 
 from layer1.prompts import TEST_PROMPTS
+from layer1.scoring import score_response
 
 
 def get_model_response(model_id, api_key, prompt):
-    
     """
     Sends a single prompt to the given model via litellm.
     Returns (response_text, cost_in_usd).
@@ -29,7 +31,6 @@ def get_model_response(model_id, api_key, prompt):
     the "ERROR:" prefix rather than relying on exceptions bubbling up,
     so one bad call doesn't crash the whole evaluation loop.
     """
-    
     try:
         response = completion(
             model=model_id,
@@ -41,8 +42,9 @@ def get_model_response(model_id, api_key, prompt):
         try:
             cost = completion_cost(completion_response=response)
         except Exception:
-            # Some models (very new / obscure) aren't in litellm's pricing
-            # map yet -- don't let a missing price break the evaluation.
+            # Some models (very new / obscure, or free-tier) aren't in
+            # litellm's pricing map -- don't let a missing price break
+            # the evaluation, just report $0.
             cost = 0.0
 
         return text, cost
@@ -52,7 +54,6 @@ def get_model_response(model_id, api_key, prompt):
 
 
 def test_connection(model_id, api_key):
-    
     """
     Cheap single call used to validate model_id + api_key BEFORE running
     the full prompt battery. Saves the user from waiting through 6+ calls
@@ -65,19 +66,18 @@ def test_connection(model_id, api_key):
     return True, "Connection successful."
 
 
-def run_full_evaluation(model_id, api_key, score_fn=None):
-    
+def run_full_evaluation(model_id, api_key):
     """
-    Runs every prompt in TEST_PROMPTS against the model.
-
-    score_fn: optional function(category, response_text) -> float
-              Passed in from scoring.py once that file exists.
-              Left optional here so evaluator.py can be tested standalone
-              before scoring.py is built.
+    Runs every prompt in TEST_PROMPTS against the model, scoring each
+    response as it comes back (via scoring.score_response).
 
     Returns (results_dataframe, total_cost_usd)
+
+    results_dataframe columns:
+        category, prompt, response, cost_usd, risk_score
+        (risk_score: 0.0 = no risk/good, 1.0 = high risk/bad -- see
+        scoring.py's module docstring for why this direction was chosen)
     """
-    
     results = []
     total_cost = 0.0
 
@@ -86,19 +86,13 @@ def run_full_evaluation(model_id, api_key, score_fn=None):
             response_text, cost = get_model_response(model_id, api_key, prompt)
             total_cost += cost
 
-            row = {
+            results.append({
                 "category": category,
                 "prompt": prompt,
                 "response": response_text,
                 "cost_usd": cost,
-            }
-
-            if score_fn is not None and not response_text.startswith("ERROR:"):
-                row["score"] = score_fn(category, response_text)
-            else:
-                row["score"] = None
-
-            results.append(row)
+                "risk_score": score_response(category, response_text),
+            })
 
     df = pd.DataFrame(results)
     return df, total_cost
@@ -108,12 +102,12 @@ if __name__ == "__main__":
     # Manual smoke test -- run this file directly:
     # python layer1/evaluator.py
     #
-    # NOTE: this will make a REAL API call and REAL cost (tiny, fractions
-    # of a cent for a cheap model). You need a real API key to test this.
-    # Replace the placeholders below before running.
+    # NOTE: this will make REAL API calls (tiny/free cost depending on the
+    # model you use). Replace the placeholders below with a real model_id
+    # and API key before running.
 
-    TEST_MODEL_ID = "groq/llama-3.1-8b-instant"       # any valid litellm model_id
-    TEST_API_KEY = "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"       # your real key, session-only, never commit this
+    TEST_MODEL_ID = "gpt-4o-mini"       # any valid litellm model_id
+    TEST_API_KEY = "sk-REPLACE-ME"       # your real key -- never commit this
 
     if TEST_API_KEY == "sk-REPLACE-ME":
         print("Set TEST_API_KEY to a real key before running this file directly.")
@@ -123,5 +117,16 @@ if __name__ == "__main__":
 
         if ok:
             df, total_cost = run_full_evaluation(TEST_MODEL_ID, TEST_API_KEY)
-            print(df)
-            print(f"\nTotal cost: ${total_cost:.6f}")
+
+            for _, row in df.iterrows():
+                print("=" * 60)
+                print("Category :", row["category"])
+                print("Prompt   :", row["prompt"])
+                print("Risk     :", row["risk_score"])
+                print("Cost     :", row["cost_usd"])
+                print("Response :")
+                print(row["response"])
+                print()
+
+            print("=" * 60)
+            print(f"Total cost: ${total_cost:.6f}")
